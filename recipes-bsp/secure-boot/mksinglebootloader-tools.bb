@@ -8,6 +8,8 @@ inherit native
 
 TOOLS = "fip_create BOOT_BINGEN"
 
+PR = "r1"
+
 do_install () {
     install -d ${D}/${sbindir}
 

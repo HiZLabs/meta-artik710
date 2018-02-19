@@ -2,7 +2,7 @@
 
 require recipes-bsp/u-boot/u-boot.inc
 
-DEPENDS += "dtc-native mksinglebootloader-tools secure-boot-artik710"
+DEPENDS += "bc-native dtc-native mksinglebootloader-tools secure-boot-artik710"
 
 DESCRIPTION = "u-boot which includes support for the Samsung Artik boards."
 LICENSE = "GPLv2+"
@@ -10,15 +10,20 @@ LIC_FILES_CHKSUM = "file://Licenses/gpl-2.0.txt;md5=b234ee4d69f5fce4486a80fdaf4a
 
 PROVIDES += "u-boot"
 
-SRCREV_artik710 = "8a9ae34f41a0c992344aa2dd1b1cc40d01161305"
-SRC_URI_artik710 = " \
-    git://github.com/resin-os/uboot-artik7.git \
-    file://0001-artik710_raptor.h-Set-CONFIG_ROOT_PART-to-2.patch \
-    file://0002-compiler-gcc6.h-Add-support-for-GCC6.patch \
-    file://0003-artik710_raptor.h-Boot-partition-is-a-fat-one.patch \
-    file://0004-artik710_raptor.h-Use-rootwait.patch \
-    "
+SRCREV_artik710 = "860b3724b5ebb8c4b58c1cbec62f4ed27254f1da"
+SRC_URI[md5sum] = "77b9b443803c11a20871a3c90d7b0b09"
 
+#SRC_URI_artik710 = " \
+#    git://github.com/HiZLabs/u-boot-artik.git;protocol=https;branch=A710_os_3.0.0 \
+#    file://0001-artik710_raptor.h-Set-CONFIG_ROOT_PART-to-2.patch \
+#    file://0002-compiler-gcc6.h-Add-support-for-GCC6.patch \
+#    file://0003-artik710_raptor.h-Boot-partition-is-a-fat-one.patch \
+#    file://0004-artik710_raptor.h-Use-rootwait.patch \
+#    "
+
+SRC_URI_artik710 = " \
+    git://github.com/SamsungARTIK/u-boot-artik.git;protocol=https;branch=A710_os_3.0.0 \
+    "
 S = "${WORKDIR}/git"
 
 PACKAGE_ARCH = "${MACHINE_ARCH}"
@@ -26,23 +31,41 @@ COMPATIBLE_MACHINE = "(artik710)"
 
 # Setup uboot environment for each flasher/non-flasher images
 do_compile_append() {
-    cp `find . -name "env_common.o"` copy_env_common.o
-    ${OBJCOPY} -O binary --only-section=.rodata.default_environment `find . -name "copy_env_common.o"`
-    tr '\0' '\n' < copy_env_common.o | grep '=' | tee default_envs_emmc.txt default_envs_sd.txt > /dev/null
+    # Copied from build-artik/build_uboot.sh
+    ENV_FILE=`find ${B} -name "env_common.o"`
+    echo "Extracting params from $ENV_FILE"
+    cp $ENV_FILE copy_env_common.o
+    echo " copying objects"
+    ${OBJCOPY} -O binary --only-section=.rodata.default_environment copy_env_common.o
 
-    # root device should be (mmcblk)1 when booting the SD card flasher image (exit with code 1 when no replacement done so we error out when upstream modifies the u-boot env)
-    sed -i '/rootdev=[0-9]\{1\}/{s//rootdev=1/;h};${x;/./{x;q0};x;q1}' default_envs_sd.txt
+    echo " translating line endings"
+    tr '\0' '\n' < copy_env_common.o | grep '=' > default_envs.txt
+    cp default_envs.txt default_envs.txt.orig
+    tools/mkenvimage -s 16384 -o params.bin default_envs.txt
 
-    # eMMC and SD card boots will default to "run mmcboot"
-    sed -i "s/^bootcmd=.*/bootcmd=run mmcboot/" default_envs_emmc.txt
-    sed -i "s/^bootcmd=.*/bootcmd=run mmcboot/" default_envs_sd.txt
+    # Generate recovery param
+    echo " generating recovery param"
+    sed -i -e 's/rootdev=.*/rootdev=1/g' default_envs.txt
+    sed -i -e 's/bootcmd=run .*/bootcmd=run recoveryboot/g' default_envs.txt
+    tools/mkenvimage -s 16384 -o params_recovery.bin default_envs.txt
 
-    tools/mkenvimage -s 16384 -o params_emmc.bin default_envs_emmc.txt
-    tools/mkenvimage -s 16384 -o params_sd.bin default_envs_sd.txt
+    # Generate mmcboot param
+    echo " generating mmcboot param"
+    cp default_envs.txt.orig default_envs.txt
+    sed -i -e 's/bootcmd=run .*/bootcmd=run mmcboot/g' default_envs.txt
+    tools/mkenvimage -s 16384 -o params_emmc.bin default_envs.txt
+
+    # Generate sd-boot param
+    echo " generating sd-boot param"
+    cp default_envs.txt.orig default_envs.txt
+    sed -i -e 's/rootdev=.*/rootdev=1/g' default_envs.txt
+    tools/mkenvimage -s 16384 -o params_sd.bin default_envs.txt
 
     # generate FIP (Firmware Image Package) (fip-nonsecure.bin) from the uboot binary
+    echo " generating FIP"
     tools/fip_create/fip_create --dump --bl33 u-boot.bin fip-nonsecure.bin
     # generate nexell image (fip-nonsecure.img) from the FIP binary
+    echo " generating secure bin"
     tools/nexell/SECURE_BINGEN -c ${BASE_MACH} -t 3rdboot -n ${S}/tools/nexell/nsih/raptor-64.txt -i ${B}/fip-nonsecure.bin -o ${B}/fip-nonsecure.img -l ${FIP_LOAD_ADDR} -e 0x00000000
 }
 
@@ -61,7 +84,7 @@ do_singlebootloader() {
 }
 
 do_deploy_append () {
-    install ${B}/params_emmc.bin ${B}/params_sd.bin ${B}/fip-nonsecure.img ${DEPLOYDIR}
+    install ${B}/params_emmc.bin ${B}/params_sd.bin ${B}/params_recovery.bin ${B}/fip-nonsecure.img ${DEPLOYDIR}
     if [ "${BOOTLOADER_SINGLEIMAGE}" = "1" ]; then
         install ${B}/singleimage-emmcboot.bin ${B}/singleimage-sdboot.bin ${DEPLOYDIR}
     fi
