@@ -51,6 +51,9 @@ SDIMG_EXT ?= "artik710-sd.img"
 SDIMG = "${DEPLOY_DIR_IMAGE}/${IMAGE_NAME}.${SDIMG_EXT}"
 EASY_FIND_SDIMG = "${DEPLOY_DIR_IMAGE}/${IMAGE_BASENAME}.${SDIMG_EXT}"
 
+#pad ext images a bit and add a bunch of blocks for journal - probably should figure out how to turn off journalling to save space, since the disk is for read only
+RO_BLOCK_GAIN_FACTOR ?= "5 / 4 + 1024 + 1"
+
 IMAGE_CMD_artik710-sdimg () {
 	rm -f ${DEPLOY_DIR_IMAGE}/*.${SDIMG_EXT}
 	ln -rsf ${SDIMG} ${EASY_FIND_SDIMG}
@@ -75,7 +78,14 @@ IMAGE_CMD_artik710-sdimg () {
 	# Make boot image
 	BOOT_SIZE_BLOCKS=$(expr ${BOOT_SIZE} \* 256)
 	bbdebug 1 " BOOT_SIZE_BLOCKS=${BOOT_SIZE_BLOCKS}"
-	mkfs.ext4 -L "boot" -b 4096 -d ${WORKDIR}/boot ${WORKDIR}/boot.img ${BOOT_SIZE_BLOCKS}
+	BOOT_ACTUAL_SIZE_KB=$(du -bks ${WORKDIR}/boot | awk '{print $1}')
+	bbdebug 1 " BOOT_ACTUAL_SIZE_KB=${BOOT_ACTUAL_SIZE_KB}"
+	BOOT_ACTUAL_SIZE_BLOCKS=$(expr ${BOOT_ACTUAL_SIZE_KB} / 4 \* ${RO_BLOCK_GAIN_FACTOR})
+	bbdebug 1 " BOOT_ACTUAL_SIZE_BLOCKS=${BOOT_ACTUAL_SIZE_BLOCKS}"
+	if [ "${BOOT_SIZE_BLOCKS}" -lt "${BOOT_ACTUAL_SIZE_BLOCKS}" ]; then
+		bbfatal "BOOT_ACTUAL_SIZE_BLOCKS will not fit in BOOT_SIZE_BLOCKS"
+	fi
+	mkfs.ext4 -L "boot" -b 4096 -d ${WORKDIR}/boot ${WORKDIR}/boot.img ${BOOT_ACTUAL_SIZE_BLOCKS}
 	
 	bbdebug 1 "Creating ext4 Modules image"
 	rm -f ${WORKDIR}/modules.img
@@ -86,8 +96,15 @@ IMAGE_CMD_artik710-sdimg () {
 	tar zxf ${DEPLOY_DIR_IMAGE}/modules-${MACHINE}.tgz -C ${WORKDIR}/modules
 
 	MODULES_SIZE_BLOCKS=$(expr ${MODULE_SIZE} \* 1024 / 4)
-	bbdebug 1 " MODULE_SIZE_BLOCKS=${MODULES_SIZE_BLOCKS}"
-	mkfs.ext4 -L "modules" -b 4096 -d ${WORKDIR}/modules/lib/modules ${WORKDIR}/modules.img ${MODULES_SIZE_BLOCKS}
+	bbdebug 1 " MODULES_SIZE_BLOCKS=${MODULES_SIZE_BLOCKS}"
+	MODULES_ACTUAL_SIZE_KB=$(du -bks ${WORKDIR}/modules | awk '{print $1}')
+	bbdebug 1 " MODULES_ACTUAL_SIZE_KB=${MODULES_ACTUAL_SIZE_KB}"
+	MODULES_ACTUAL_SIZE_BLOCKS=$(expr ${MODULES_ACTUAL_SIZE_KB} / 4 \* ${RO_BLOCK_GAIN_FACTOR})
+	bbdebug 1 " MODULES_ACTUAL_SIZE_BLOCKS=${MODULES_ACTUAL_SIZE_BLOCKS}"
+	if [ "${MODULES_SIZE_BLOCKS}" -lt "${MODULES_ACTUAL_SIZE_BLOCKS}" ]; then
+		bbfatal "MODULES_ACTUAL_SIZE_BLOCKS will not fit in MODULES_SIZE_BLOCKS"
+	fi
+	mkfs.ext4 -L "modules" -b 4096 -d ${WORKDIR}/modules/lib/modules ${WORKDIR}/modules.img ${MODULES_ACTUAL_SIZE_BLOCKS}
 
 	# Set up fuse fs workdir
 	install -d ${WORKDIR}/rootfs_sd
@@ -122,9 +139,9 @@ IMAGE_CMD_artik710-sdimg () {
 
 	SD_ROOTFS_SIZE_KB=$(du -bks ${WORKDIR}/rootfs_sd | awk '{print $1}')
 	bbdebug 1 " SD_ROOTFS_SIZE_KB=${SD_ROOTFS_SIZE_KB}"
-	SD_ROOTFS_SIZE_BLOCKS=$(expr ${SD_ROOTFS_SIZE_KB} / 4)
+	SD_ROOTFS_SIZE_BLOCKS=$(expr ${SD_ROOTFS_SIZE_KB} / 4 \* ${RO_BLOCK_GAIN_FACTOR})
 	bbdebug 1 " SD_ROOTFS_SIZE_BLOCKS=${SD_ROOTFS_SIZE_BLOCKS}"
-	SD_ROOTFS_SIZE_SECTOR=$(expr ${SD_ROOTFS_SIZE_KB} \* 2)
+	SD_ROOTFS_SIZE_SECTOR=$(expr ${SD_ROOTFS_SIZE_BLOCKS} \* 8)
 	bbdebug 1 " SD_ROOTFS_SIZE_SECTOR=${SD_ROOTFS_SIZE_SECTOR}"
 	mkfs.ext3 -L "rootfs" -b 4096 -d ${WORKDIR}/rootfs_sd ${WORKDIR}/rootfs.img ${SD_ROOTFS_SIZE_BLOCKS}
 
@@ -148,7 +165,7 @@ IMAGE_CMD_artik710-sdimg () {
 	bbdebug 1 " MODULE_END_SECTOR=${MODULE_END_SECTOR}"
 	ROOTFS_START_SECTOR=$(expr $MODULES_END_SECTOR + 1)
 	bbdebug 1 " ROOTFS_START_SECTOR=${ROOTFS_START_SECTOR}"
-	SDIMG_SIZE_SECTOR=$(expr ${ROOTFS_START_SECTOR} \+ ${SD_ROOTFS_SIZE_KB} \* 2)
+	SDIMG_SIZE_SECTOR=$(expr ${ROOTFS_START_SECTOR} \+ ${SD_ROOTFS_SIZE_SECTOR})
 	bbdebug 1 " SDIMG_SIZE_SECTOR=${SDIMG_SIZE_SECTOR}"
 	SDIMG_SIZE_KB=$(expr ${SDIMG_SIZE_SECTOR} / 2)
 	bbdebug 1 " SDIMG_SIZE_KB=${SDIMG_SIZE_KB}"
